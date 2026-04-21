@@ -30,10 +30,10 @@ def get_out(cmd):
   return res.stdout
 
 
-def get_commits(origin, target, start):
-  cmd = ['git', 'rev-list', '--oneline', '--reverse', origin, f'^{target}']
+def get_commits(source, target, start):
+  cmd = ['git', 'rev-list', '--oneline', '--reverse', source, f'^{target}']
   if start:
-    cmd.append(f'{start}^..{origin}')
+    cmd.append(f'{start}^..{source}')
   return get_out(cmd).splitlines()
 
 
@@ -70,7 +70,18 @@ def cherry_pick(sha, num, title):
   ps = get_out(['git', 'show', '-s', '--format=%P', sha]).strip().split()
   if len(ps) > 1:
     cmd.append('--mainline=1')
-  subprocess.run(cmd + [sha], check=True, stdout=sys.stderr)
+  result = subprocess.run(cmd + [sha], check=True, stdout=sys.stderr)
+
+  if result.returncode != 0:
+    status_output = get_out(['git', 'status'])
+    files_to_remove = []
+    for line in status_output.splitlines():
+      if 'deleted by us:' in line:
+        filename = line.split('deleted by us:')[1].strip()
+        files_to_remove.append(filename)
+    if files_to_remove:
+      cmd = ['git', 'rm'] + files_to_remove
+      subprocess.run(cmd, check=True, stdout=sys.stderr)
 
   cmd = [
       'git', 'commit', '--no-verify', f'--author={author}', f'--date={date}',
@@ -81,28 +92,33 @@ def cherry_pick(sha, num, title):
 
 def main():
   p = argparse.ArgumentParser()
+  p.add_argument('--source-branch', required=True)
   p.add_argument('--target-branch', required=True)
   p.add_argument('--start-commit')
-  p.add_argument('--origin-branch', default='main')
   p.add_argument('--max-commits', type=int, default=1000)
+  p.add_argument(
+      '--all-commits',
+      action='store_true',
+      help='Process all commits, not just PRs')
   args = p.parse_args()
 
-  links = []
-  target_prs = get_pr_set(args.target_branch, args.origin_branch)
-  autoroll_prs = get_pr_set('HEAD', args.origin_branch)
+  # All cherry picked PRs on the target branch since the branch point.
+  target_prs = get_pr_set(args.target_branch, args.source_branch)
+  # All cherry picked PRs on the autoroll branch since the branch point.
+  autoroll_prs = get_pr_set('HEAD', args.source_branch)
+  commits_added = []
 
-  # Get the number of unmerged commits on the autoroll branch.
-  commits_added = len(autoroll_prs - target_prs)
-
-  for line in get_commits(args.origin_branch, args.target_branch,
+  for line in get_commits(args.source_branch, args.target_branch,
                           args.start_commit):
-    if commits_added >= args.max_commits:
+    if len(commits_added) >= args.max_commits:
       print(f"Reached commit limit ({args.max_commits}).", file=sys.stderr)
       break
 
     match = re.match(r'^(\w+) (.*) \(#(\d+)\)$', line)
     if match:
       sha, title, pr_num = match.groups()
+
+      # Skip if the PR is in the skip list.
       if any(
           skip_sha.startswith(sha)
           for skip_sha in _SKIP_LIST.get(args.target_branch, [])):
@@ -112,16 +128,15 @@ def main():
       if pr_num in target_prs:
         continue
 
-      # If the PR is not on the current (autoroll) branch, cherry-pick it.
+      # Cherry pick if the PR is not already in the autoroll branch.
       if pr_num not in autoroll_prs:
         cherry_pick(sha, pr_num, title)
         autoroll_prs.add(pr_num)
-        commits_added += 1
 
-      links.append(f'- #{pr_num}')
+      commits_added.append(f'- #{pr_num}')
 
-  if links:
-    print('\n'.join(links))
+  if commits_added:
+    print('\n'.join(commits_added))
 
 
 if __name__ == '__main__':
