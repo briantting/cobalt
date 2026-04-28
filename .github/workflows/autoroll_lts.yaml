@@ -95,7 +95,7 @@ jobs:
               --target-branch "${TARGET_BRANCH}" \
               --start-commit "${{ inputs.m138_start_commit }}" \
               --max-commits "${MAX_COMMITS}" \
-              --all-commits)
+              --identifier-type commits)
           fi
 
           if [[ -n "${PR_LINKS}" ]]; then
